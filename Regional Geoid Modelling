@@ -1,0 +1,977 @@
+%q2
+%Extract Ellipsoidal Heights from .txt File
+
+file_path_txt = 'NGS_GRAVD_Block_CN03_Gravity_Data_BETA1.txt';
+
+fid_txt = fopen(file_path_txt);
+
+% Read the data: StationID (column 1), Latitude (column 3), Longitude (column 4), Ellipsoidal Heights (column 5)
+data_txt = textscan(fid_txt, '%s %f %f %f %f %f', 'HeaderLines', 0);
+fclose(fid_txt);
+
+% Extract latitude, longitude, and ellipsoidal heights
+latitude_txt = data_txt{3};
+longitude_txt = data_txt{4};
+ellipsoidal_height = data_txt{5};  %Column 5 contains the ellipsoidal heights in meters
+
+longitude_txt = arrayfun(@(x) x - 360 * (x > 180), longitude_txt);
+
+
+
+%Extract Long-Wavelength Geoid Undulations from the .gdf File
+
+file_path_geoid = 'geoid_AIUB-CHAMP01S_8db8107d9a3121f44491ddae00d34ddeff67cd7077c4263c91658cfc221a791a.gdf';
+
+fid_geoid = fopen(file_path_geoid);
+data_geoid = textscan(fid_geoid, '%f %f %f', 'HeaderLines', 38);
+fclose(fid_geoid);
+
+% Extract longitude, latitude, and geoid undulation values
+longitude_geoid = data_geoid{1};
+latitude_geoid = data_geoid{2};
+geoid_undulation = data_geoid{3};  
+
+% Adjust longitude to match the -180 to +180 convention
+longitude_geoid = arrayfun(@(x) x - 360 * (x > 180), longitude_geoid);
+
+%Interpolate Geoid Undulations and Calculate Orthometric Heights
+
+% Use scatteredInterpolant
+F = scatteredInterpolant(longitude_geoid, latitude_geoid, geoid_undulation, 'natural', 'none');
+
+% Interpolate geoid undulations
+geoid_undulation_interp = F(longitude_txt, latitude_txt);
+
+% Handle NaN values
+geoid_undulation_interp(isnan(geoid_undulation_interp)) = mean(geoid_undulation, 'omitnan');
+
+% Calculate the orthometric height (H = h - N)
+orthometric_height = ellipsoidal_height - geoid_undulation_interp;
+
+% Combine data for saving and visualization
+output_matrix = [latitude_txt, longitude_txt, ellipsoidal_height, geoid_undulation_interp, orthometric_height];
+
+%---------------------
+% Step 4: Visualization
+
+% Scatter Plot for Orthometric Heights
+figure;
+scatter(longitude_txt, latitude_txt, 100, orthometric_height, 'filled');
+title('Orthometric Height at Each Degree Point', 'FontSize', 14, 'FontWeight', 'bold');
+xlabel('Longitude (deg)', 'FontSize', 12);
+ylabel('Latitude (deg)', 'FontSize', 12);
+colormap('sky'); 
+c = colorbar;
+c.Label.String = 'Orthometric Height (m)'; 
+caxis([min(orthometric_height), max(orthometric_height)]);
+grid on;
+
+% Contour Plot for Orthometric Heights
+figure;
+scatter_contour = scatteredInterpolant(longitude_txt, latitude_txt, orthometric_height, 'natural', 'none');
+[xq, yq] = meshgrid(linspace(min(longitude_txt), max(longitude_txt), 100), linspace(min(latitude_txt), max(latitude_txt), 100));
+vq = scatter_contour(xq, yq);
+
+contourf(xq, yq, vq, 'LineColor', 'none');
+title('Contour Map of Orthometric Height at Each Degree Point', 'FontSize', 14, 'FontWeight', 'bold');
+xlabel('Longitude (deg)', 'FontSize', 12);
+ylabel('Latitude (deg)', 'FontSize', 12);
+colormap('sky'); 
+c = colorbar;
+c.Label.String = 'Orthometric Height (m)'; 
+caxis([min(orthometric_height), max(orthometric_height)]);
+grid on;
+
+%---------------------
+% Step 5: Save the Output to a .txt File
+
+output_filename = 'orthometric_heights_output_new.txt';
+fileID = fopen(output_filename, 'w');
+fprintf(fileID, 'Latitude (deg)    Longitude (deg)    Ellipsoidal Height (m)    Geoid Undulation (m)    Orthometric Height (m)\n');
+fprintf(fileID, '%10.6f %12.6f %25.6f %24.6f %24.6f\n', output_matrix');
+fclose(fileID);
+
+disp(['Orthometric heights saved to ', output_filename]);
+
+%q3
+% Step 1: Load the gravity data (NGS_GRAVD file)
+file_path = 'NGS_GRAVD_Block_CN03_Gravity_Data_BETA1.txt';
+fid = fopen(file_path);  
+data = textscan(fid, '%s %f %f %f %f %f', 'HeaderLines', 0); 
+fclose(fid);  
+
+% Convert cell arrays to matrices
+Latitude = data{3};       
+Longitude = data{4};      
+ObservedGravity = data{6}; 
+ObservedGravity = ObservedGravity / 1000;  % Convert from ÂµGal to mGal
+
+% Step 2: Load the orthometric heights data
+orthometric_file = 'orthometric_heights_output_new.txt';
+fid_orthometric = fopen(orthometric_file);
+orthometric_data = textscan(fid_orthometric, '%f %f %f %f %f', 'HeaderLines', 1);
+fclose(fid_orthometric);
+
+% Extract the orthometric data columns
+latitude_orthometric = orthometric_data{1};
+longitude_orthometric = orthometric_data{2};
+orthometric_heights = orthometric_data{5}; % Orthometric Height
+
+% Step 3: Pick a random data point from NGS gravity data
+random_idx = randi(length(Latitude)); % Random index for a data point
+random_lat = Latitude(random_idx);
+random_lon = Longitude(random_idx);
+random_observed_gravity = ObservedGravity(random_idx);
+
+% Step 4: Interpolate the orthometric height for this point
+interpolated_height = griddata(longitude_orthometric, latitude_orthometric, orthometric_heights, random_lon, random_lat, 'cubic');
+
+%% PART 1: Calculate Normal Gravity (Î³) %%
+% Somigliana-Pizzetti formula parameters
+a = 6378137.0;  % Semi-major axis in meters
+b = 6356752.314245; % Semi-minor axis in meters
+gamma_a = 978031.85; % Normal gravity at the equator in ÂµGal
+gamma_b = 978049.35; % Normal gravity at the poles in ÂµGal
+
+% Latitude in radians
+phi = deg2rad(random_lat);
+
+% Normal gravity calculation using the formula
+gamma = (a * gamma_a * cos(phi)^2 + b * gamma_b * sin(phi)^2) / (a * cos(phi)^2 + b * sin(phi)^2);
+
+% Convert from ÂµGal to mGal (divide by 1000)
+gamma = gamma / 1000;  % Convert to mGal
+
+% Output the Normal Gravity (gamma) for the selected random point
+fprintf('Normal Gravity (gamma, mGal): %.6f\n', gamma);
+
+%% PART 2: Calculate Free-Air Correction %%
+% Free-Air correction formula: deltag_free_air = 0.3086 * h_orthometric (in mGal)
+free_air_correction = 0.3086 * interpolated_height;
+
+% Convert the free-air correction to mGal
+free_air_correction = free_air_correction / 1000;  % Convert to mGal
+
+% Output the Free-Air Correction for the selected random point
+fprintf('Interpolated Orthometric Height (m): %.6f\n', interpolated_height);
+fprintf('Free-Air Correction (Î´g_free_air, mGal): %.6f\n', free_air_correction);
+
+%% PART 3: Calculate Free-Air Anomaly (FAA) %%
+% Free-Air Anomaly formula: FAA = (g_observed + deltag_free_air) - Î³
+FAA = (random_observed_gravity + free_air_correction) - gamma;
+
+% Output the Observed Gravity (g_observed) and Free-Air Anomaly (FAA) for the selected random point
+fprintf('Observed Gravity (g_observed, mGal): %.6f\n', random_observed_gravity);
+fprintf('Free-Air Anomaly (FAA, mGal): %.6f\n', FAA);
+
+%% PART 4: Calculate Free-Air Anomaly (FAA) for All Points %%
+% Interpolate the orthometric heights for all data points
+interpolated_heights = griddata(longitude_orthometric, latitude_orthometric, orthometric_heights, Longitude, Latitude, 'cubic');
+
+% Normal gravity calculation for all data points
+phi_all = deg2rad(Latitude);
+gamma_all = (a * gamma_a * cos(phi_all).^2 + b * gamma_b * sin(phi_all).^2) ./ (a * cos(phi_all).^2 + b * sin(phi_all).^2);
+gamma_all = gamma_all / 1000;  % Convert to mGal
+
+% Free-Air correction for all data points
+free_air_correction_all = 0.3086 * interpolated_heights / 1000;  % Convert to mGal
+
+% Free-Air Anomaly for all points
+FAA_all = (ObservedGravity + free_air_correction_all) - gamma_all;  % FAA in mGal
+
+% Step 5: Plot the Free-Air Anomaly (FAA) for all points in a scatter plot
+figure;
+scatter(Longitude, Latitude, 20, FAA_all, 'filled');  
+colormap('sky');  
+colorbar;  
+caxis([min(FAA_all) max(FAA_all)]); 
+title('Free-Air Anomaly (FAA) for Gravity Data');
+xlabel('Longitude');
+ylabel('Latitude');
+
+
+h = colorbar;  
+ylabel(h, 'FAA (mGal)'); 
+
+% Step 6: Contour Plot of Free-Air Anomaly (FAA)
+% Create a grid for contour plotting
+[lon_grid, lat_grid] = meshgrid(linspace(min(Longitude), max(Longitude), 100), ...
+                                linspace(min(Latitude), max(Latitude), 100));
+
+% Interpolate FAA values onto the grid
+FAA_grid = griddata(Longitude, Latitude, FAA_all, lon_grid, lat_grid, 'cubic');
+
+% Create the contour plot
+figure;
+contourf(lon_grid, lat_grid, FAA_grid, 20, 'LineColor', 'none'); 
+colormap('sky');  
+colorbar; 
+caxis([min(FAA_all) max(FAA_all)]);  title('Contour Plot of Free-Air Anomaly (FAA)');
+xlabel('Longitude');
+ylabel('Latitude');
+
+h_contour = colorbar;  
+ylabel(h_contour, 'FAA (mGal)');  
+
+% Step 7: Save FAA data to a .txt file with units
+
+% Create a file path for the output file
+output_file = 'Q3FAA_data.txt';
+
+% Open the file for writing 
+fid_output = fopen(output_file, 'w');
+
+% Check if the file opened successfully
+if fid_output == -1
+    error('Failed to open the output file.');
+end
+
+% Write a header for the file
+fprintf(fid_output, 'Longitude (Â°)\tLatitude (Â°)\tFAA (mGal)\n');
+
+% Write the data (Longitude, Latitude, FAA)
+for i = 1:length(Longitude)
+    fprintf(fid_output, '%.6f\t%.6f\t%.6f\n', Longitude(i), Latitude(i), FAA_all(i));
+end
+
+% Close the file after writing
+fclose(fid_output);
+
+% Display a message
+fprintf('FAA data has been saved to %s\n', output_file);
+
+%q4
+% Load and parse the gravity anomaly data from GGM model
+file_path = 'gravity_anomaly_cl_EGM2008_6075bee6162a38ab61ecbda3c90fa398e9a9ee97467c69ace04c60906f893ce0(1).gdf';
+fid = fopen(file_path);
+data = textscan(fid, '%f %f %f', 'HeaderLines', 38); 
+fclose(fid);
+
+longitude = data{1};
+latitude = data{2};
+gravity_anomaly = data{3};  % Gravity anomaly values in ÂµGal
+
+% Adjust longitude to follow the -180 to +180 convention
+longitude = arrayfun(@(x) x - 360 * (x > 180), longitude);
+
+% Set up a grid for contour plotting 
+grid_lon = linspace(min(longitude), max(longitude), 100);
+grid_lat = linspace(min(latitude), max(latitude), 100);
+[grid_lon, grid_lat] = meshgrid(grid_lon, grid_lat);
+
+% Interpolate gravity anomaly values onto the grid using natural neighbor interpolation
+grid_gravity_anomaly = griddata(longitude, latitude, gravity_anomaly, grid_lon, grid_lat, 'natural');
+
+% Handle NaN values
+grid_gravity_anomaly(isnan(grid_gravity_anomaly)) = mean(gravity_anomaly, 'omitnan');
+
+% Plotting the gravity anomaly data
+figure;
+contourf(grid_lon, grid_lat, grid_gravity_anomaly, 'LineStyle', 'none');
+colormap('parula');
+colorbar;
+title('Gravity Anomaly Data from GGM Model (EGM2008) Visualization (in ÂµGal)', 'FontSize', 14, 'FontWeight', 'bold');
+xlabel('Longitude [Â°]', 'FontSize', 12);
+ylabel('Latitude [Â°]', 'FontSize', 12);
+c1 = colorbar;
+c1.Label.String = 'Gravity Anomaly (ÂµGal)';
+c1.Label.FontSize = 12;
+c1.Label.FontWeight = 'bold';
+caxis([min(gravity_anomaly) max(gravity_anomaly)]);  
+hold off;
+
+% Step: Save the full gravity anomaly data to gravity_anomaly_full.txt
+output_filename = 'gravity_anomaly_full.txt';  
+fileID = fopen(output_filename, 'w'); 
+fprintf(fileID, 'Longitude (Â°)\tLatitude (Â°)\tGravity Anomaly (ÂµGal)\n');  
+fprintf(fileID, '%10.6f\t%12.6f\t%24.6f\n', [longitude, latitude, gravity_anomaly]'); 
+fclose(fileID);  
+
+disp('Gravity anomaly data saved to gravity_anomaly_full.txt');  % Confirmation message
+
+% Scatter plot of gravity anomaly data
+figure;
+scatter(longitude, latitude, 20, gravity_anomaly, 'filled');
+colormap('parula');
+colorbar;
+title('Gravity Anomaly Data from GGM Model (EGM2008) Scatter Plot (in ÂµGal)', 'FontSize', 14, 'FontWeight', 'bold');
+xlabel('Longitude [Â°]', 'FontSize', 12);
+ylabel('Latitude [Â°]', 'FontSize', 12);
+c1 = colorbar;
+c1.Label.String = 'Gravity Anomaly (ÂµGal)';
+c1.Label.FontSize = 12;
+c1.Label.FontWeight = 'bold';
+caxis([min(gravity_anomaly) max(gravity_anomaly)]);  
+hold off;
+
+%q5
+% Function to calculate the atmospheric correction
+function delta_g_atm = atmospheric_correction(H)
+    % H is the height in meters
+    % Compute delta_g_atm using the provided polynomial expression
+    delta_g_atm = 0.871 - 1.0298e-4 * H + 5.3105e-9 * H^2 - 2.1642e-13 * H^3 + ...
+               9.5246e-18 * H^4 - 2.2411e-22 * H^5;
+end
+
+% Main Program
+
+filename = 'Q4_2reduced_gravity_anomalies.txt';
+orthometric_filename = 'Q2orthometric_heights_output_new.txt'; 
+
+% Open the gravity anomaly file for reading
+fileID = fopen(filename, 'r');
+if fileID == -1
+    error('Could not open file: %s', filename);
+end
+
+% Initialize empty vectors to store the data
+latitude = [];
+longitude = [];
+reduced_gravity_anomaly = [];
+
+% Read data line by line from the gravity anomaly file
+while ~feof(fileID)
+    line = fgetl(fileID);
+    % Skip empty lines or lines that don't contain numbers
+    if isempty(line) || line(1) == '#'
+        continue;
+    end
+    
+    % Convert the current line to a numeric array
+    data_row = str2num(line);  % Convert line to numbers
+    if length(data_row) == 5  % Check if the line has the expected 5 columns
+        latitude = [latitude; data_row(1)];
+        longitude = [longitude; data_row(2)];
+        reduced_gravity_anomaly = [reduced_gravity_anomaly; data_row(5)];
+    end
+end
+
+% Close the gravity anomaly file after reading
+fclose(fileID);
+
+% Read the orthometric height data
+fileID = fopen(orthometric_filename, 'r');
+if fileID == -1
+    error('Could not open file: %s', orthometric_filename);
+end
+
+% Initialize arrays for orthometric height data
+orthometric_latitude = [];
+orthometric_longitude = [];
+orthometric_height = [];
+
+fgetl(fileID);  % Skip the header line
+
+% Read data line by line
+while ~feof(fileID)
+    line = fgetl(fileID);
+    % Skip empty lines or lines that don't contain numbers
+    if isempty(line) || line(1) == '#'
+        continue;
+    end
+    
+    % Convert the current line to a numeric array
+    data_row = str2num(line);  % Convert line to numbers
+    if length(data_row) == 5  % Check if the line has the expected 5 columns
+        orthometric_latitude = [orthometric_latitude; data_row(1)];
+        orthometric_longitude = [orthometric_longitude; data_row(2)];
+        orthometric_height = [orthometric_height; data_row(5)];  % Orthometric height is the 5th column
+    end
+end
+
+% Close the orthometric height file after reading
+fclose(fileID);
+
+% Check for missing values (NaN)
+missing_indices = isnan(reduced_gravity_anomaly);
+
+% If missing data exists, perform forward filling (replace NaN with the last known value)
+for i = 2:length(reduced_gravity_anomaly)
+    if missing_indices(i)
+        reduced_gravity_anomaly(i) = reduced_gravity_anomaly(i-1);
+    end
+end
+
+
+% Interpolate orthometric heights to match the gravity anomaly data
+interpolated_heights = griddata(orthometric_latitude, orthometric_longitude, orthometric_height, latitude, longitude, 'linear');
+
+% Apply atmospheric correction using the interpolated orthometric heights
+delta_g_atm = arrayfun(@atmospheric_correction, interpolated_heights);
+
+% Apply the correction to the gravitational anomaly
+delta_g_smw_corrected = reduced_gravity_anomaly - delta_g_atm;
+
+% Display the results
+disp(['Atmospheric Correction (Î´gatm): ', num2str(delta_g_atm(1)), ' mGal']);
+disp(['Corrected Gravitational Anomaly (first value): ', num2str(delta_g_smw_corrected(1)), ' mGal']);
+
+% 2D scatter plot of corrected gravitational anomaly 
+figure;
+scatter(longitude, latitude, 36, delta_g_smw_corrected, 'filled');
+colorbar;
+xlabel('Longitude (Â°)');
+ylabel('Latitude (Â°)');
+title('Corrected Gravitational Anomaly (mGal)');
+caxis([min(delta_g_smw_corrected), max(delta_g_smw_corrected)]);  
+colormap('parula');  
+cb = colorbar;
+ylabel(cb, 'Corrected Gravitational Anomaly (mGal)');
+
+% Save the corrected data to a text file
+output_filename = 'corrected_gravity_anomalies.txt';
+output_fileID = fopen(output_filename, 'w');
+
+fprintf(output_fileID, 'Latitude (Â°)\tLongitude (Â°)\tCorrected Gravitational Anomaly (mGal)\n');
+
+for i = 1:length(latitude)
+    fprintf(output_fileID, '%.6f\t%.6f\t%.6f\n', latitude(i), longitude(i), delta_g_smw_corrected(i));
+end
+
+fclose(output_fileID);
+
+disp(['Corrected gravitational anomalies saved to ', output_filename]);
+
+% Contour plot of corrected gravitational anomaly using natural interpolation
+[X, Y] = meshgrid(linspace(min(longitude), max(longitude), 100), ...
+                 linspace(min(latitude), max(latitude), 100));
+
+% Interpolate corrected gravitational anomaly data
+Z = griddata(longitude, latitude, delta_g_smw_corrected, X, Y, 'natural');
+
+% Create the contour plot
+figure;
+contourf(X, Y, Z, 20);  
+colorbar;
+xlabel('Longitude (Â°)');
+ylabel('Latitude (Â°)');
+title('Contour Plot of Corrected Gravitational Anomaly (mGal)');
+caxis([min(delta_g_smw_corrected), max(delta_g_smw_corrected)]);
+colormap('parula');
+cb = colorbar;
+ylabel(cb, 'Corrected Gravitational Anomaly (mGal)');
+
+%q6
+% Load the data from Q5corrected_gravity_anomalies.txt
+filename = 'Q5corrected_gravity_anomalies.txt';
+data = readtable(filename, 'Delimiter', '\t', 'HeaderLines', 1);
+
+% Extract columns for latitude, longitude, and corrected gravitational anomaly
+latitudes = data{:, 1};
+longitudes = data{:, 2};
+corrected_anomalies = data{:, 3};
+
+unique_latitudes = unique(latitudes);
+unique_longitudes = unique(longitudes);
+
+% Initialize a grid for the corrected gravitational anomaly data
+grid_data = NaN(length(unique_latitudes), length(unique_longitudes));
+
+% Populate the grid with corrected gravitational anomalies
+for i = 1:length(latitudes)
+    % Find the row and column indices for each latitude and longitude
+    row = find(unique_latitudes == latitudes(i));
+    col = find(unique_longitudes == longitudes(i));
+    
+    % Assign the corrected gravitational anomaly value to the grid
+    grid_data(row, col) = corrected_anomalies(i);
+end
+
+% Save the grid data to a new file
+output_grid_filename = 'corrected_gravity_anomalies_grid_values.txt';
+output_fileID = fopen(output_grid_filename, 'w');
+
+% Write the grid data
+for i = 1:size(grid_data, 1)
+    fprintf(output_fileID, '%.6f\t', grid_data(i, :));
+    fprintf(output_fileID, '\n');
+end
+
+% Close the output file
+fclose(output_fileID);
+
+disp(['Gridded corrected gravitational anomalies (without latitudes/longitudes) saved to ', output_grid_filename]);
+
+% Scatter plot of gridded data
+figure;
+scatter(longitudes, latitudes, 36, corrected_anomalies, 'filled'); 
+colorbar;
+xlabel('Longitude (Â°)');
+ylabel('Latitude (Â°)');
+title('Scatter Plot of Corrected Gravitational Anomaly saved to a grid (mGal)');
+caxis([min(corrected_anomalies), max(corrected_anomalies)]);
+colormap('parula');
+cb = colorbar;
+ylabel(cb, 'Corrected Gravitational Anomaly (mGal)');
+
+%q7
+% Step 1: Load SRTM DEM Data
+dem = imread('srtm_16_04.tif'); 
+[rows, cols] = size(dem); 
+disp('DEM Data Loaded:');
+disp(['Rows: ' num2str(rows) ', Columns: ' num2str(cols)]);
+
+% Step 2: Define constants
+G = 6.67430e-11; % Gravitational constant in m^3 kg^-1 s^-2
+rho = 2670; % Density in kg/m^3
+disp(['Gravitational Constant (G): ' num2str(G)]);
+disp(['Density (rho): ' num2str(rho)]);
+
+% Define Latitude and Longitude ranges for evaluation
+lat_min = 40; lat_max = 43;
+lon_min = -101; lon_max = -98;
+
+% Step 3: Define Grid Coordinates
+lat_range = linspace(lat_min, lat_max, rows);
+lon_range = linspace(lon_min, lon_max, cols);
+
+disp('Latitude and Longitude Ranges:');
+disp(['Lat Range: ' num2str(lat_min) ' to ' num2str(lat_max)]);
+disp(['Lon Range: ' num2str(lon_min) ' to ' num2str(lon_max)]);
+
+% Step 4: Define the Point of Evaluation (center of the DEM grid)
+xP = round(rows / 2); % Center point in the latitude grid
+yP = round(cols / 2); % Center point in the longitude grid
+disp(['Point P Coordinates: Latitude = ' num2str(lat_range(xP)) ', Longitude = ' num2str(lon_range(yP))]);
+
+% Step 5: Calculate the ellipsoidal distance (r) from the Point P to all other points
+[X, Y] = meshgrid(lon_range, lat_range);  % Create coordinate grid for longitudes and latitudes
+r = sqrt((X - lon_range(yP)).^2 + (Y - lat_range(xP)).^2);  % Compute distance between points
+
+% Debugging: Check the range of r
+disp('Range of Distances (r):');
+disp(['Min r: ' num2str(min(r(:))) ', Max r: ' num2str(max(r(:)))]);
+
+% Step 6: Define Heights (H) for P and Q
+H_P = double(dem(xP, yP));  % Height at point P
+H_Q = double(dem);  % Heights at all other points
+disp(['Height at Point P (H_P): ' num2str(H_P)]);
+disp(['Min Height in DEM: ' num2str(min(H_Q(:))) ', Max Height in DEM: ' num2str(max(H_Q(:)))]);
+
+% Step 7: Define the Kernel (1/r^3) 
+r3 = r.^3; % Kernel in spatial domain (1/r^3)
+r3(isnan(r3)) = inf; % Handle NaNs where r is zero at the center
+
+% Use small offset to avoid division by zero in r^3 normalization
+offset = 1e-6;
+r_max = max(r(:)) + offset;  % Max distance with an offset
+normalized_r3 = (1 ./ (r3 + offset)) / (1 / r_max); 
+
+% Debugging: Check the range of the kernel
+disp('Kernel 1/r^3 after normalization:');
+disp(['Min r^3: ' num2str(min(normalized_r3(:))) ', Max r^3: ' num2str(max(normalized_r3(:)))]);
+
+% Step 8: Perform FFT on Kernel and Heights
+F_r3 = fft2(normalized_r3);  % FFT of the normalized kernel
+F_H = fft2(H_Q);  % FFT of the height data (H_Q)
+
+% Step 9: Apply Convolution (FFT * FFT) and compute terrain correction
+% Compute the inverse FFT for terrain correction, accounting for the gravitational effect
+delta_gT = real(ifft2(F_r3 .* F_H));  % Inverse FFT of the convolution
+
+% Step 10: Adjust Terrain Correction Formula with scaling factor to convert to mGal
+scaling_factor = G * rho / (4 * pi * 10^5);  % Scale to mGal units (1 mGal = 10^-5 m/s^2)
+delta_gT = delta_gT * scaling_factor;  % Apply scaling to convert to mGal
+
+% Debugging: Check the range of terrain correction
+disp('Range of Terrain Correction (Î´gT):');
+disp(['Min Î´gT: ' num2str(min(delta_gT(:))) ', Max Î´gT: ' num2str(max(delta_gT(:)))]);
+
+% Step 11: Output the Terrain Correction at Point P (in mGal)
+disp('Terrain Correction (Î´gT) at Point P in mGal:');
+terrain_correction_at_P = delta_gT(xP, yP);  % Terrain correction at point P
+disp(terrain_correction_at_P);
+
+% Step 12: Visualize the Terrain Correction Map (delta_gT)
+figure;
+imagesc(lon_range, lat_range, delta_gT); 
+colorbar;  
+title('Terrain Reduction (Î´gT) Map');
+xlabel('Longitude');
+ylabel('Latitude');
+colormap(parula);
+disp('Step 13: Applying Gravimetric Terrain Reduction (âˆ†gFaye)...');
+
+% Debugging: Check the size of the input grids for gravity anomalies and terrain correction
+disp('Size of Corrected Gravity Anomalies grid:');
+disp(size(corrected_gravity_anomalies));
+
+disp('Size of Terrain Correction (Î´gT) grid:');
+disp(size(delta_gT));
+
+% Check a sample of the data from the corrected gravity anomalies and terrain correction
+disp('Sample of Corrected Gravity Anomalies (âˆ†gatm_s&mw):');
+disp(corrected_gravity_anomalies(1:5, 1:5)); 
+
+disp('Sample of Terrain Correction (Î´gT):');
+disp(delta_gT(1:5, 1:5)); 
+
+% Initialize the matrix for Faye anomaly (âˆ†gFaye) of the same size as the input grid
+faye_anomaly = corrected_gravity_anomalies - delta_gT;
+
+% Debugging: Check if the Faye anomaly matrix was computed correctly
+disp('Faye Anomaly (âˆ†gFaye) Computation Check:');
+disp(['Min âˆ†gFaye: ' num2str(min(faye_anomaly(:))) ', Max âˆ†gFaye: ' num2str(max(faye_anomaly(:)))]);
+
+% Check if the Faye anomaly values are within a reasonable range
+disp('Sample Faye Anomaly Values (âˆ†gFaye):');
+disp(faye_anomaly(1:10, 1:10)); 
+
+% Step 14: Plot Faye Anomaly (âˆ†gFaye) Map 
+
+
+% Create the figure
+figure;
+
+imagesc(lon_range, lat_range, faye_anomaly); 
+colorbar;
+title('Faye Anomaly (âˆ†gFaye) Map');
+xlabel('Longitude');
+ylabel('Latitude');
+
+
+colormap(parula); 
+axis xy; 
+
+if exist('faye_anomaly', 'var')
+    % Save the Faye anomaly data to a .txt file
+    writematrix(faye_anomaly, 'faye_anomaly.txt', 'Delimiter', '\t');
+    disp('Faye anomaly data saved as faye_anomaly.txt');
+else
+    disp('Faye anomaly data not found.');
+end
+
+%q8
+% Step 1: Load the Faye anomaly data
+filename = 'Q7faye_anomaly.txt';
+fileID = fopen(filename, 'r');
+data = fscanf(fileID, '%f');
+fclose(fileID);
+
+% Debug: Check if data was loaded correctly
+if isempty(data)
+    error('Data could not be loaded from the file. Check the file path and contents.');
+end
+
+% Reshape data based on known grid size
+numRows = 100;  
+numCols = length(data) / numRows;
+
+% Debug: Ensure numCols is an integer
+if mod(numCols, 1) ~= 0
+    error('The data cannot be evenly reshaped into a %dx%d grid. Check numRows or the data size.', numRows, numCols);
+end
+numCols = round(numCols);
+
+faye_anomaly = reshape(data, numRows, numCols);
+
+% Convert Faye anomaly from mGal to SI units (m/s^2)
+faye_anomaly = faye_anomaly * 1e-5;
+
+% Debug: Check basic statistics of the Faye anomaly data after conversion
+fprintf('Faye anomaly (m/s^2): min = %f, max = %f, mean = %f\n', min(faye_anomaly(:)), max(faye_anomaly(:)), mean(faye_anomaly(:)));
+
+% Step 2: Define constants
+R = 6371000;  
+lat_min = 40; lat_max = 43; 
+lon_min = -101; lon_max = -98;
+
+% Step 3: Define latitude and longitude grids in radians
+lat_range = linspace(deg2rad(lat_min), deg2rad(lat_max), numRows);
+lon_range = linspace(deg2rad(lon_min), deg2rad(lon_max), numCols);
+[Lat, Lon] = meshgrid(lat_range, lon_range);
+
+% Debug: Check grid dimensions and range
+fprintf('Latitude range: [%f, %f] radians\n', min(lat_range), max(lat_range));
+fprintf('Longitude range: [%f, %f] radians\n', min(lon_range), max(lon_range));
+fprintf('Grid size (Lat, Lon): (%d, %d)\n', size(Lat, 1), size(Lon, 2));
+
+% Step 4: Calculate the angular distance Ïˆ for each grid point relative to the center
+% Center point of the grid
+lat_center = mean(lat_range);
+lon_center = mean(lon_range);
+
+% Calculate Ïˆ across the grid relative to the center point
+psi = acos(sin(lat_center) * sin(Lat) + cos(lat_center) * cos(Lat) .* cos(Lon - lon_center));
+
+% Debug: Check for imaginary values due to rounding errors in psi calculation
+if any(imag(psi(:)) ~= 0)
+    warning('Imaginary values detected in psi. Applying real() to remove.');
+end
+psi = real(psi); % Remove any imaginary components due to rounding errors
+
+% Step 5: Define the Stokes kernel function on the grid with enhanced scaling
+S_kernel = (1 - 1.5 * cos(psi) + 0.5 * cos(psi).^3);
+
+% Apply a larger scaling factor to the kernel
+S_kernel_scaled = S_kernel * 1e12;
+
+% Debug: Check scaled kernel values
+fprintf('Scaled Stokes kernel: min = %f, max = %f, mean = %f\n', min(S_kernel_scaled(:)), max(S_kernel_scaled(:)), mean(S_kernel_scaled(:)));
+
+
+figure;
+imagesc(S_kernel_scaled);
+colorbar;
+title('Scaled Stokes Kernel');
+
+% Step 6: Calculate area element for each grid cell in spherical coordinates
+dLat = lat_range(2) - lat_range(1);  % Latitude step size
+dLon = lon_range(2) - lon_range(1);  % Longitude step size
+dOmega = abs(dLat * dLon);  % Area element in steradians
+
+% Debug: Print area element value
+fprintf('Area element dOmega = %e steradians\n', dOmega);
+
+% Step 7: Perform FFT-based convolution
+faye_fft = fft2(faye_anomaly, numRows, numCols);
+S_fft = fft2(S_kernel_scaled, numRows, numCols);
+
+% Debug: Check FFT results
+fprintf('FFT of Faye anomaly: min = %e, max = %e\n', min(abs(faye_fft(:))), max(abs(faye_fft(:))));
+fprintf('FFT of Stokes kernel: min = %e, max = %e\n', min(abs(S_fft(:))), max(abs(S_fft(:))));
+
+% Element-wise multiply in Fourier domain and transform back
+T_r_map_fft = real(ifft2(faye_fft .* S_fft)) * (R * dOmega) / (4 * pi);
+
+% Debug: Check resulting disturbing potential map values
+fprintf('Disturbing potential map (T_r): min = %f, max = %f, mean = %f\n', min(T_r_map_fft(:)), max(T_r_map_fft(:)), mean(T_r_map_fft(:)));
+
+% Step 8: Plot the disturbing potential map
+
+% Ensure dimensions match for plotting by transposing T_r_map_fft if necessary
+if size(T_r_map_fft, 1) ~= length(lat_range) || size(T_r_map_fft, 2) ~= length(lon_range)
+    T_r_map_fft = T_r_map_fft'; 
+end
+
+% Convert latitude and longitude to degrees for plotting
+lat_deg = rad2deg(lat_range);
+lon_deg = rad2deg(lon_range);
+
+% Plot the disturbing potential map
+figure;
+imagesc(lon_deg, lat_deg, T_r_map_fft);
+set(gca, 'YDir', 'normal'); 
+colorbar;
+xlabel('Longitude (degrees)');
+ylabel('Latitude (degrees)');
+title('Disturbing Potential Map (T_r)');
+
+% Step 9: Save the disturbing potential map (T_r) values to a .txt file
+output_filename = 'Q8disturbing_potential_map_T_r.txt';
+
+
+if ~ismatrix(T_r_map_fft)
+    T_r_map_fft = reshape(T_r_map_fft, numRows, numCols);
+end
+
+writematrix(T_r_map_fft, output_filename, 'Delimiter', 'tab');
+
+fprintf('Disturbing potential map values saved to %s\n', output_filename);
+
+
+fileID = fopen(output_filename, 'w');
+for i = 1:numRows
+    fprintf(fileID, '%f\t', T_r_map_fft(i, :));
+    fprintf(fileID, '\n');
+end
+fclose(fileID);
+
+
+% Faye anomaly (m/s^2): min = -0.000537, max = 0.000346, mean = -0.000010
+% Latitude range: [0.698132, 0.750492] radians
+% Longitude range: [-1.762783, -1.710423] radians
+% Grid size (Lat, Lon): (360000, 100)
+% Scaled Stokes kernel: min = 0.001721, max = 436154.537264, mean = 70135.042082
+% Area element dOmega = 7.692380e-11 steradians
+% FFT of Faye anomaly: min = 6.031461e-07, max = 3.582964e+02
+% FFT of Stokes kernel: min = 5.492218e+00, max = 1.591494e+09
+% Disturbing potential map (T_r): min = -3.859720, max = -0.264934, mean = -0.617737
+% Disturbing potential map values saved to Q8disturbing_potential_map_T_r.txt
+% 
+
+%q9
+% PART 1: Load the disturbing potential map (T_r)
+filename = 'Q8disturbing_potential_map_T_r.txt';
+fileID = fopen(filename, 'r');
+if fileID == -1
+    error('Error opening file: %s. Check if the file exists and the path is correct.', filename);
+end
+T_r_data = fscanf(fileID, '%f');
+fclose(fileID);
+
+% Debug: Check if data was loaded correctly
+if isempty(T_r_data)
+    error('No data loaded from the file. Check the file content.');
+else
+    fprintf('Successfully loaded %d values from the file.\n', length(T_r_data));
+end
+
+% Reshape T_r_data based on the correct grid dimensions
+numRows = 100; 
+numCols = length(T_r_data) / numRows; 
+
+% Ensure the data can be reshaped into a grid
+if mod(length(T_r_data), numRows) ~= 0
+    error('Data size mismatch. Adjust numRows or verify data dimensions in the file.');
+end
+
+T_r_map = reshape(T_r_data, numRows, numCols);
+
+% Debug: Check the dimensions of the reshaped grid
+fprintf('T_r map reshaped into %d rows and %d columns.\n', numRows, numCols);
+
+% PART 2: Define constants for normal gravity calculation
+a = 6378137.0;          % Semi-major axis in meters
+b = 6356752.314245;     % Semi-minor axis in meters
+gamma_a = 978031.85;    % Normal gravity at the equator in ÂµGal
+gamma_b = 978049.35;    % Normal gravity at the poles in ÂµGal
+
+% Define latitude grid for normal gravity calculation
+lat_min = 40; lat_max = 43;    
+lat_range = linspace(deg2rad(lat_min), deg2rad(lat_max), numRows);
+lon_range = linspace(-101, -98, numCols); 
+
+% Debug: Check latitude and longitude ranges
+fprintf('Latitude range: [%f, %f] radians\n', lat_range(1), lat_range(end));
+fprintf('Longitude range: [%f, %f] degrees\n', lon_range(1), lon_range(end));
+
+% Calculate normal gravity across the latitude grid
+gamma = zeros(numRows, 1); 
+for i = 1:numRows
+    phi = lat_range(i); 
+    gamma(i) = (a * gamma_a * cos(phi)^2 + b * gamma_b * sin(phi)^2) / ...
+               (a * cos(phi)^2 + b * sin(phi)^2);
+end
+gamma = gamma / 1000;  % Convert to mGal
+
+% PART 3: Calculate the undulation (N_r) using Bruns's formula
+% Expand gamma to match the size of T_r_map for element-wise division
+gamma_grid = repmat(gamma, 1, numCols);
+
+% Calculate the undulation (N_r_map) by dividing the disturbing potential map by the gravity grid
+N_r_map = T_r_map ./ gamma_grid;  % Calculate the undulation in meters
+
+% PART 4: Output sample results and save to .txt file
+fprintf('\nSample values from T_r_map (Disturbing Potential):\n');
+disp(T_r_map(1:5, 1:5));  % First 5 rows and columns
+
+fprintf('\nSample values from gamma (Normal Gravity, mGal):\n');
+disp(gamma(1:5));  % First 5 gamma values for latitudes
+
+fprintf('\nSample values from N_r_map (Undulation, m):\n');
+disp(N_r_map(1:5, 1:5));  % First 5 rows and columns of the undulation map
+
+% PART 5: Save the undulation map (N_r_map) to text file
+output_filename = 'geoid_undulation_map.txt'; 
+% Open the file for writing (this will overwrite the file if it already exists)
+fileID = fopen(output_filename, 'w');
+if fileID == -1
+    error('Error opening file for writing: %s', output_filename);
+end
+
+fprintf(fileID, 'Geoid Undulation (N_r) Map\n');
+fprintf(fileID, 'Latitude (degrees)\tLongitude (degrees)\tUndulation (m)\n');
+
+for i = 1:numRows
+    for j = 1:numCols
+        
+        fprintf(fileID, '%.6f\t%.6f\t%.6f\n', lat_deg(i), lon_deg(j), N_r_map(i, j));
+    end
+end
+
+fclose(fileID);
+
+fprintf('Undulation map saved to %s\n', output_filename);
+
+
+% Successfully loaded 36000000 values from the file.
+% T_r map reshaped into 100 rows and 360000 columns.
+% Latitude range: [0.698132, 0.750492] radians
+% Longitude range: [-101.000000, -98.000000] degrees
+% 
+% Sample values from T_r_map (Disturbing Potential):
+%    -0.6880   -1.8533   -0.6690   -0.6875   -0.6652
+%    -0.6411   -1.8499   -0.6631   -0.6903   -0.6677
+%    -0.5817   -1.8685   -0.6574   -0.6937   -0.6695
+%    -0.5297   -1.8900   -0.6518   -0.6975   -0.6708
+%    -0.4847   -1.9153   -0.6457   -0.7017   -0.6724
+% 
+% 
+% Sample values from gamma (Normal Gravity, mGal):
+%   978.0391
+%   978.0391
+%   978.0391
+%   978.0391
+%   978.0391
+% 
+% 
+% Sample values from N_r_map (Undulation, m):
+%    -0.0007   -0.0019   -0.0007   -0.0007   -0.0007
+%    -0.0007   -0.0019   -0.0007   -0.0007   -0.0007
+%    -0.0006   -0.0019   -0.0007   -0.0007   -0.0007
+%    -0.0005   -0.0019   -0.0007   -0.0007   -0.0007
+%    -0.0005   -0.0020   -0.0007   -0.0007   -0.0007
+% 
+% 
+% N_r_map dimensions: 100 x 360000
+% 
+% Undulation map range: min = -0.0039, max = -0.0003
+% 
+
+%q10
+% File paths for the data
+file_path_ggm = 'gravity_anomaly_cl_EGM2008_6075bee6162a38ab61ecbda3c90fa398e9a9ee97467c69ace04c60906f893ce0(1).gdf'; 
+file_path_nr = 'Q9geoid_undulation_map.txt';  
+
+% Step 1: Load the GGM gravity anomaly data
+fid_ggm = fopen(file_path_ggm);
+if fid_ggm == -1
+    error('Failed to open GGM file: %s', file_path_ggm);
+end
+data_ggm = textscan(fid_ggm, '%f %f %f', 'HeaderLines', 38); 
+fclose(fid_ggm);
+
+longitude_ggm = data_ggm{1}; 
+latitude_ggm = data_ggm{2}; 
+gravity_anomalies_ggm = data_ggm{3}; 
+
+% Step 2: Check for NaN values in GGM data
+disp('Checking for NaN values in GGM data:');
+disp(sum(isnan(gravity_anomalies_ggm)));  % Count NaN values
+
+% Step 3: Load the Geoid Undulation (Nr) data
+fid_nr = fopen(file_path_nr);
+if fid_nr == -1
+    error('Failed to open Geoid file: %s', file_path_nr);
+end
+data_nr = textscan(fid_nr, '%f %f %f', 'HeaderLines', 3); 
+fclose(fid_nr);
+
+% Extract data
+longitude_nr = data_nr{1}; 
+latitude_nr = data_nr{2}; 
+undulation_nr = data_nr{3};
+
+% Step 4: Check for NaN values in Geoid data
+disp('Checking for NaN values in Geoid data:');
+disp(sum(isnan(undulation_nr)));  % Count NaN values
+
+% Step 5: Interpolate the GGM gravity anomalies to the observed locations
+gravity_anomalies_ggm_interp = griddata(longitude_ggm, latitude_ggm, gravity_anomalies_ggm, longitude_nr, latitude_nr, 'cubic');
+
+% Step 6: Check for NaN values in interpolated gravity anomalies
+disp('Checking for NaN values in interpolated GGM gravity anomalies:');
+disp(sum(isnan(gravity_anomalies_ggm_interp)));
+
+% Step 7: Combine the data to get the co-geoid (Ncogeoid)
+co_geoid = undulation_nr + gravity_anomalies_ggm_interp;
+
+% Step 8: Check for NaN values in the final co-geoid
+disp('Checking for NaN values in co-geoid (Ncogeoid):');
+disp(sum(isnan(co_geoid)));
+
+% Step 9: Display first few rows of co-geoid data for inspection
+disp('First few rows of co-geoid (Ncogeoid):');
+disp([longitude_nr(1:5), latitude_nr(1:5), co_geoid(1:5)]);
+
